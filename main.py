@@ -117,28 +117,26 @@ class Emission():
 
 class discreteEmission(Emission):
     emMat=None
-    numOutputFeatures=None
     numOutputsPerFeature=None
 
     
-    def __init__(self,numStates,emMat=None,numOutputFeatures=None,numOutputsPerFeature=None):
+    def __init__(self,numStates,emMat=None,numOutputsPerFeature=None):
                                   
         if emMat is None:
-            if (numOutputFeatures is None) or (numOutputsPerFeature is None):
+            if numOutputsPerFeature is None:
                 raise MyValidationError("Must provide Emission matrix or numOutputFeatures and numOutputsPerFeature")
             else:
-                A=random.rand(numStates,numOutputFeatures,numOutputsPerFeature)
-                self.emMat=(A.T/numpy.sum(A.T,axis=0)).T
-        elif isinstance(emMat,(numpy.ndarray, numpy.generic)) and (emMat.ndim==3) and (emMat.shape[0]==numStates):
+                A=random.rand(numStates,numOutputsPerFeature)
+                self.emMat=(A.T/A.sum(axis=1)).T
+        elif isinstance(emMat,(numpy.ndarray, numpy.generic)) and (emMat.ndim==2) and (emMat.shape[0]==numStates):
             self.emMat=emMat
         else:
             raise MyValidationError("Emission matrix not valid type or shape")
         self.emType='discrete'
-        self.numOutputFeatures=self.emMat.shape[1]
-        self.numOutputsPerFeature=self.emMat.shape[2]
+        self.numOutputsPerFeature=self.emMat.shape[1]
     
-    def generateEmission(self,state):
-        return numpy.array([numpy.random.choice(self.numOutputsPerFeature,p=self.emMat[state,cFeature]) for cFeature in range(self.numOutputFeatures)]).reshape(-1,1)
+    def generateEmission(self,stateSeq):
+        return numpy.array([numpy.random.choice(self.numOutputsPerFeature,p=self.emMat[cState]) for cState in stateSeq])
     
     def probStateObs(self,cState,cObs):
         return prod([self.emMat[cState,cFeat,cOb] for cFeat,cOb in zip(range(self.numOutputFeatures),cObs)])
@@ -156,7 +154,7 @@ class discreteEmission(Emission):
 class myHMM():
     T=None
     numStates=None
-    emission=None
+    emission=[]
     pi0=None
     def __init__(self, T=None,numStates=None,pi0=None):
         if isinstance(numStates,int) and (T is None):
@@ -179,7 +177,7 @@ class myHMM():
             raise MyValidationError("Must first define transition matrix or number of states")
             
         if emType=='discrete':
-            self.emission=discreteEmission(self.numStates,**kargs)
+            self.emission.append(discreteEmission(self.numStates,**kargs))
         else:
             raise MyValidationError("Must provide valid emission type")
 
@@ -214,9 +212,9 @@ class myHMM():
         
     def genOutputSequence(self,stateSeq):
         outputSeq=[]
-        for cState in stateSeq:
-            outputSeq.append(self.emission.generateEmission(cState))
-        return numpy.hstack(outputSeq)
+        for cEmission in self.emission:
+            outputSeq.append(cEmission.generateEmission(stateSeq))
+        return outputSeq
     
     def train(self,Ys):
         
@@ -264,14 +262,13 @@ def createRandomEmission(numStates,numOutputFeatures,NumOutputsPerFeature):
 
 
 numStates=3
-numOutputFeatures=1
 NumOutputsPerFeature=10
 
 
 
 
 mod=myHMM(numStates=3)
-mod.addEmission(emMat=None,emType='discrete',numOutputFeatures=numOutputFeatures,numOutputsPerFeature=NumOutputsPerFeature)
+mod.addEmission(emMat=None,emType='discrete',numOutputsPerFeature=NumOutputsPerFeature)
 
 # obs=[[3],[4],[2],[3],[4],[2]]
 # alpha=calc_alpha(obs, mod)
@@ -281,7 +278,7 @@ mod.addEmission(emMat=None,emType='discrete',numOutputFeatures=numOutputFeatures
 X,Y=mod.genSequences(NumSequences=5,maxLength=20)
 
 
-mod.train(Y)
+# mod.train(Y)
 
 # mod.addT()
 
