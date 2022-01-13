@@ -23,28 +23,30 @@ def calc_alpha(obs,T,pi0,probObsState):
     # equivilent of elment-by-element multiplication
     alpha[:,0]=einsum('i,i->i',alphaTransition,probObsState[:,0])
     for t in range(1,Tsteps):
-        alphaTransition=einsum('j,ji->j',alpha[:,0],T)
-        alpha[:,t]=einsum('i,i->i',alphaTransition,probObsState[:,t])
+        # alphaTransition=einsum('j,ji->i',alpha[:,t-1],T)
+        # alpha[:,t]=einsum('i,i->i',alphaTransition,probObsState[:,t])
+        alpha[:,t]=einsum('i,ij,j->j',alpha[:,t-1],T,probObsState[:,t])
     return alpha
 
 def calc_beta(obs,T,probObsState):
     Tsteps=obs[0].shape[0]
     numStates=T.shape[0]
     beta=empty((numStates,Tsteps))
-    beta[:,-1]=numStates*[1]
-    for tb in range(-1,-Tsteps,-1):
-        beta[:,tb-1]=einsum('j,ij,j->i',beta[:,tb],T,probObsState[:,-tb])
-    return beta
+    beta[:,0]=numStates*[1]
+    probObsState=fliplr(probObsState)
+    for tb in range(1,Tsteps):
+        beta[:,tb]=einsum('j,ij,j->i',beta[:,tb-1],T,probObsState[:,tb-1])
+    return fliplr(beta)
 
 def calc_gamma(alpha,beta):
-    topPart=einsum('ij,ij->ij',alpha,beta)
-    gamma=topPart/topPart.sum(axis=0)
+    topPart=einsum('it,it->it',alpha,beta)
+    gamma=einsum('it,t->it',topPart,1/topPart.sum(axis=0))
     return gamma
 
 def calc_eta(obs,T,alpha,beta,probStateObs):
     topPart=einsum('it,ij,jt,jt->ijt',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
     bottomPart=einsum('kt,kw,wt,wt->t',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
-    eta=topPart/bottomPart
+    eta=einsum('ijt,t->ijt',topPart,1/bottomPart)
     return eta
 
 def viterbi(obs,HMM):
@@ -140,11 +142,10 @@ class discreteEmission(Emission):
         return self.emMat[cState,cObs]
         
     def fitTopEmission(self,obs,gamma):
-        Tsteps=obs[0].shape[0]
-        Indicator=zeros((self.numOutputFeatures,self.numOutputsPerFeature,T))
-        for cFeat in range(self.numOutputFeatures):
-            Indicator[[cFeat]*T,obs[cFeat,:],range(T)]=1
-        topPart=einsum('jkt,it->ijk',Indicator,gamma)
+        Tsteps=obs.shape[0]
+        Indicator=zeros((self.numOutputsPerFeature, Tsteps))
+        Indicator[obs,range(Tsteps)]=1
+        topPart=einsum('kt,it->ik',Indicator,gamma)
         return topPart
         
         
@@ -158,7 +159,10 @@ class myHMM():
     def __init__(self, T=None,numStates=None,pi0=None):
         if isinstance(numStates,int) and (T is None):
             tmpMat=random.rand(numStates,numStates)
-            T=(tmpMat/numpy.sum(tmpMat,axis=0)).T 
+            T=(tmpMat/tmpMat.sum(axis=0)).T
+        elif T is not None:
+            self.addT(T)
+            
         else:
             raise MyValidationError("Must provide Transition Matrix or number of states")
         self.addT(T)
@@ -218,47 +222,40 @@ class myHMM():
             outputSeq.append(cEmission.generateEmission(stateSeq))
         return outputSeq
 
-    def fitTopEmission(self,obs,gamma):
-        Tsteps=obs[0].shape[0]
-        Indicator=zeros((self.numOutputFeatures,self.numOutputsPerFeature,T))
-        for cFeat in range(self.numOutputFeatures):
-            Indicator[[cFeat]*T,obs[cFeat,:],range(T)]=1
-        topPart=einsum('jkt,it->ijk',Indicator,gamma)
-        return topPart
 
     
-    def train(self,Ys):
-        
-        
-        gammas=[]
-        etas=[]
-        pi0_topPart=zeros((self.numStates))
-        T_topPart=zeros((self.numStates,self.numStates))
-        T_bottomPart=zeros((self.numStates))
-        b_bottomPart=zeros((self.numStates))
-        # b_topPart=zeros((self.emission.emMat.shape))
-        for obs in Ys:
-            probObsState=array([cEmission.probObs(cObs) for cEmission,cObs in zip(self.emission,obs)]).prod(axis=0)
+    def train(self,Ys,iterations=20):
+        for iter in range(iterations):
+            pi0_topPart=zeros((self.numStates))
+            T_topPart=zeros((self.numStates,self.numStates))
+            T_bottomPart=zeros((self.numStates))
+            b_bottomPart=zeros((self.numStates))
+            b_topParts=[zeros((cEmission.emMat.shape)) for cEmission in self.emission]
+            for obs in Ys:
+                probObsState=array([cEmission.probObs(cObs) for cEmission,cObs in zip(self.emission,obs)]).prod(axis=0)
+    
+                alpha=calc_alpha(obs,self.T,self.pi0,probObsState)
+                beta=calc_beta(obs,self.T,probObsState)
+                gamma=calc_gamma(alpha, beta)
+                eta=calc_eta(obs, self.T, alpha, beta, probObsState)
+                pi0_topPart=pi0_topPart+gamma[:,0]
+                T_topPart=T_topPart+eta.sum(axis=2)
+                T_bottomPart=T_bottomPart+gamma[:,0:-1].sum(axis=1)
+                
+                
+                b_bottomPart=b_bottomPart+gamma.sum(axis=1)
+                b_topParts=[cTopPart+cEmission.fitTopEmission(feat_obs,gamma) for  feat_obs,cEmission, cTopPart in zip(obs,self.emission, b_topParts.copy())]
+                # b_topPart=b_topPart+self.emission[0].fitTopEmission(obs[0],gamma)
 
-            alpha=calc_alpha(obs,self.T,self.pi0,probObsState)
-            beta=calc_beta(obs,self.T,probObsState)
-            gamma=calc_gamma(alpha, beta)
-            eta=calc_eta(obs, self.T, alpha, beta, probObsState)
-            
-        #     # gammas.append(calc_gamma(alpha, beta))
-        #     # etas.append(calc_eta(obs, self, alpha, beta))
-            pi0_topPart=pi0_topPart+gamma[:,0]
-            T_topPart=T_topPart+eta.sum(axis=2)
-            T_bottomPart=T_bottomPart+gamma[:,0:-1].sum(axis=1)
-            b_bottomPart=b_bottomPart+gamma.sum(axis=1)
-            b_topPart=b_topPart+self.emission.fitTopEmission(obs,gamma)
+            R=len(Ys)
+            pi0=pi0_topPart/R
+            T=einsum('ij,i->ij',T_topPart,1/T_bottomPart)
+            # emMat=einsum('ik,i->ik',b_topPart,1/b_bottomPart)
+            self.T=T
+            self.pi0=pi0
+            # self.emission[0].emMat=emMat
+            print(self.pi0)
 
-        # R=len(Ys)
-        # pi0=pi0_topPart/R
-        # T=T_topPart/T_bottomPart
-        # b=einsum('ijk,ij->ijk',b_topPart,1/b_bottomPart)
-        
-            a=5
             
         
 
@@ -276,24 +273,52 @@ def createRandomEmission(numStates,numOutputFeatures,NumOutputsPerFeature):
         
 
 
-numStates=3
-NumOutputsPerFeature=10
+numStates=2
+NumOutputsPerFeature=3
 
 
+# T = array([[0.5,0.2,0.3],[0.3,0.5,0.2],[0.2,0.3,0.5]])
+# B = array([[0.5,0.5],[0.4,0.6],[0.7,0.3]])
+# pi = array([0.2,0.4,0.4])
+# O = [[array([0,1,0,1])]]
+# mod=myHMM(T=T,numStates=3,pi0=pi)
+# mod.addEmission(emMat=B,emType='discrete')
+# mod.train(O)
+# print(mod.T)
 
+
+# #transition probabilities
+# T = array([[0.8,0.1],
+#                        [0.1,0.8]])
+# #Emission probabilities
+# B = array([[0.1,0.2,0.7],
+#                      [0.7,0.2,0.1]])
+# #test sequence
+# test_sequence = '331122313'
+# O = [[array([3,3,1,1,2,2,3,1,3])-1]]
+# pi = array([0.5,.5])
+
+# #probabilities of going to end state
+# end_probs = [0.1, 0.1]
+# #probabilities of going from start state
+# start_probs = [0.5, 0.5]
+# mod=myHMM(T=T,numStates=3,pi0=pi)
+# mod.addEmission(emMat=B,emType='discrete')
+# mod.train(O)
 
 mod=myHMM(numStates=3)
-mod.addEmission(emMat=None,emType='discrete',numOutputsPerFeature=NumOutputsPerFeature)
-
-# obs=[[3],[4],[2],[3],[4],[2]]
-# alpha=calc_alpha(obs, mod)
-# beta=calc_beta(obs, mod)
-# delta,psi,path=viterbi(obs, mod)
-
-X,Y=mod.genSequences(NumSequences=5,maxLength=20)
+T=mod.T
+pi0=mod.pi0
+mod.addEmission(emType='discrete',numOutputsPerFeature=5)
+# mod.addEmission(emType='discrete',numOutputsPerFeature=2)
 
 
-mod.train(Y)
+X,Y=mod.genSequences(NumSequences=1000,maxLength=10)
+mod.train(Ys=Y,iterations=1)
+# print(T-mod.T)
+# print(pi0-mod.pi0)
+
+
 
 # mod.addT()
 
