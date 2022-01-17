@@ -10,7 +10,7 @@ import numpy
 from numpy import array, prod, empty, multiply, dot, ones, fliplr, matmul
 
 from numpy import array, random, diag, einsum, zeros
-from numpy.linalg import eigh, inv
+from numpy.linalg import eigh, inv, norm
 
 
 
@@ -19,13 +19,10 @@ def calc_alpha(obs,T,pi0,probObsState):
     Tsteps=obs[0].shape[0]
     numStates=T.shape[0]
     alpha=empty((numStates,Tsteps))
-    alphaTransition=pi0
     # equivilent of elment-by-element multiplication
-    alpha[:,0]=einsum('i,i->i',alphaTransition,probObsState[:,0])
+    alpha[:,0]=einsum('i,i->i',pi0,probObsState[:,0])
     for t in range(1,Tsteps):
-        # alphaTransition=einsum('j,ji->i',alpha[:,t-1],T)
-        # alpha[:,t]=einsum('i,i->i',alphaTransition,probObsState[:,t])
-        alpha[:,t]=einsum('i,ij,j->j',alpha[:,t-1],T,probObsState[:,t])
+        alpha[:,t]=einsum('j,ji,i->i',alpha[:,t-1],T,probObsState[:,t])
     return alpha
 
 def calc_beta(obs,T,probObsState):
@@ -131,6 +128,7 @@ class discreteEmission(Emission):
             raise MyValidationError("Emission matrix not valid type or shape")
         self.emType='discrete'
         self.numOutputsPerFeature=self.emMat.shape[1]
+        self.topPart=zeros(self.emMat.shape) 
     
     def generateEmission(self,stateSeq):
         return numpy.array([numpy.random.choice(self.numOutputsPerFeature,p=self.emMat[cState]) for cState in stateSeq])
@@ -141,12 +139,18 @@ class discreteEmission(Emission):
     def probStateObs(self,cState,cObs):
         return self.emMat[cState,cObs]
         
-    def fitTopEmission(self,obs,gamma):
+    def calcTopPart(self,obs,gamma):
         Tsteps=obs.shape[0]
         Indicator=zeros((self.numOutputsPerFeature, Tsteps))
         Indicator[obs,range(Tsteps)]=1
         topPart=einsum('kt,it->ik',Indicator,gamma)
-        return topPart
+        self.topPart=self.topPart+topPart
+
+    def updateEmission(self,bottomPart):
+        self.emMat = einsum('ik,i->ik',self.topPart,1/bottomPart)
+        self.topPart=zeros(self.emMat.shape) 
+
+    
         
         
             
@@ -191,9 +195,8 @@ class myHMM():
                 
             #     else
             tmpMat=random.rand(self.numStates)
-            pi0=tmpMat/sum(tmpMat)
-            pi0[-1]=1-sum(pi0[:-1])
-            pi0=pi0/pi0.sum()
+            pi0=tmpMat/tmpMat.sum()
+         
 
             self.pi0=pi0
         elif isinstance(pi0,(numpy.ndarray, numpy.generic)) and self.T.shape[0]==self.numStates:
@@ -224,7 +227,7 @@ class myHMM():
 
 
     
-    def train(self,Ys,iterations=20):
+    def train(self,Ys,iterations=20,Ttrue=None,pi0true=None):
         for iter in range(iterations):
             pi0_topPart=zeros((self.numStates))
             T_topPart=zeros((self.numStates,self.numStates))
@@ -232,7 +235,12 @@ class myHMM():
             b_bottomPart=zeros((self.numStates))
             b_topParts=[zeros((cEmission.emMat.shape)) for cEmission in self.emission]
             for obs in Ys:
-                probObsState=array([cEmission.probObs(cObs) for cEmission,cObs in zip(self.emission,obs)]).prod(axis=0)
+                probObsState=array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(len(self.emission))]).prod(axis=0)
+                
+                # probObsState=array([cEmission.probObs(cObs) for cEmission,cObs in zip(self.emission,obs)]).prod(axis=0)
+                # probObsState=array([cEmission.probObs(cObs) for cEmission,cObs in zip(self.emission,obs)]).prod(axis=0)
+
+
     
                 alpha=calc_alpha(obs,self.T,self.pi0,probObsState)
                 beta=calc_beta(obs,self.T,probObsState)
@@ -244,17 +252,25 @@ class myHMM():
                 
                 
                 b_bottomPart=b_bottomPart+gamma.sum(axis=1)
-                b_topParts=[cTopPart+cEmission.fitTopEmission(feat_obs,gamma) for  feat_obs,cEmission, cTopPart in zip(obs,self.emission, b_topParts.copy())]
-                # b_topPart=b_topPart+self.emission[0].fitTopEmission(obs[0],gamma)
+                for cFeat in range(len(obs)):
+                    self.emission[cFeat].calcTopPart(obs[cFeat],gamma)
 
             R=len(Ys)
             pi0=pi0_topPart/R
             T=einsum('ij,i->ij',T_topPart,1/T_bottomPart)
+            
             # emMat=einsum('ik,i->ik',b_topPart,1/b_bottomPart)
             self.T=T
             self.pi0=pi0
-            # self.emission[0].emMat=emMat
-            print(self.pi0)
+            for cFeat in range(len(obs)):
+                self.emission[cFeat].updateEmission(b_bottomPart)
+            # for cEmission in self.emission:
+            #     cEmission.updateEmission(b_bottomPart)
+            # print(norm(self.pi0-pi00))
+            # if Ttrue is not None:
+            #     print(norm(self.T-Ttrue))
+            if pi0true is not None:
+                print(norm(self.pi0-pi0true))            
 
             
         
@@ -289,10 +305,10 @@ NumOutputsPerFeature=3
 
 # #transition probabilities
 # T = array([[0.8,0.1],
-#                        [0.1,0.8]])
+#                         [0.1,0.8]])
 # #Emission probabilities
 # B = array([[0.1,0.2,0.7],
-#                      [0.7,0.2,0.1]])
+#                       [0.7,0.2,0.1]])
 # #test sequence
 # test_sequence = '331122313'
 # O = [[array([3,3,1,1,2,2,3,1,3])-1]]
@@ -304,27 +320,15 @@ NumOutputsPerFeature=3
 # start_probs = [0.5, 0.5]
 # mod=myHMM(T=T,numStates=3,pi0=pi)
 # mod.addEmission(emMat=B,emType='discrete')
-# mod.train(O)
+# mod.train(O,iterations=10)
 
 mod=myHMM(numStates=3)
 T=mod.T
 pi0=mod.pi0
 mod.addEmission(emType='discrete',numOutputsPerFeature=5)
 # mod.addEmission(emType='discrete',numOutputsPerFeature=2)
+X,Y=mod.genSequences(NumSequences=1000,maxLength=1)
 
-
-X,Y=mod.genSequences(NumSequences=1000,maxLength=10)
-mod.train(Ys=Y,iterations=1)
-# print(T-mod.T)
-# print(pi0-mod.pi0)
-
-
-
-# mod.addT()
-
-# A=array([[.9,.05,.05],[.1,.85,.05],[0, .25, .75]])
-# pi_o=array([.25,.45,.3])
-
-# createRandomEmission(numStates,numOutputFeatures,NumOutputsPerFeature)
-
-# emmissionDist=random.random_intergers(0,maxNumOutputsPerFeature,[numStates,numOutputFeature,maxNumOutputsPerFeature])
+HMM=myHMM(numStates=3)
+# HMM.addEmission('discrete',emMat=mod.emission[0].emMat)
+HMM.train(Ys=Y,iterations=500,Ttrue=T,pi0true=pi0)

@@ -17,7 +17,7 @@ sequence_syms = {'1':0,'2':1,'3':2}
 sequence = ['1','2','3']
 
 #test sequence
-test_sequence = '331122313'
+test_sequence = '3311223211123313'
 test_sequence = [x for x in test_sequence]
 
 #probabilities of going to end state
@@ -100,7 +100,7 @@ def gamma_probs(forward, backward, forward_val):
 
 #performing iterations until convergence
 
-for iteration in range(20):
+for iteration in range(10):
 
     print('\nIteration No: ', iteration + 1)
     # print('\nTransition:\n ', transition)

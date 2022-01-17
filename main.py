@@ -15,39 +15,35 @@ from numpy.linalg import eigh, inv
 
 
 
-def calc_alpha(obs,HMM):
-    T=obs.shape[1]
-    alpha=empty((HMM.numStates,T))
-    alphaTransition=HMM.pi0
-    probStateObs=[HMM.emission.probStateObs(cState,obs[:,0]) for cState in range(HMM.numStates)]
+def calc_alpha(obs,T,pi0,probObsState):
+    Tsteps=obs[0].shape[0]
+    numStates=T.shape[0]
+    alpha=empty((numStates,Tsteps))
+    alphaTransition=pi0
     # equivilent of elment-by-element multiplication
-    alpha[:,0]=einsum('i,i->i',alphaTransition,probStateObs)
-    for t in range(1,T):
-        probStateObs=[HMM.emission.probStateObs(cState,obs[:,t]) for cState in range(HMM.numStates)]
-        alphaTransition=einsum('j,ji->j',alpha[:,0],HMM.T)
-        alpha[:,t]=einsum('i,i->i',alphaTransition,probStateObs)
+    alpha[:,0]=einsum('i,i->i',alphaTransition,probObsState[:,0])
+    for t in range(1,Tsteps):
+        alphaTransition=einsum('j,ji->j',alpha[:,0],T)
+        alpha[:,t]=einsum('i,i->i',alphaTransition,probObsState[:,t])
     return alpha
 
-def calc_beta(obs,HMM):
-    T=obs.shape[1]
-    beta=empty((HMM.numStates,T))
-    beta[:,-1]=HMM.numStates*[1]
-    for tb in range(-1,-T,-1):
-        probStateObs=[HMM.emission.probStateObs(cState,obs[:,-tb]) for cState in range(HMM.numStates)]
-        beta[:,tb-1]=einsum('j,ij,j->i',beta[:,tb],HMM.T,probStateObs)
-    return fliplr(beta)
+def calc_beta(obs,T,probObsState):
+    Tsteps=obs[0].shape[0]
+    numStates=T.shape[0]
+    beta=empty((numStates,Tsteps))
+    beta[:,-1]=numStates*[1]
+    for tb in range(-1,-Tsteps,-1):
+        beta[:,tb-1]=einsum('j,ij,j->i',beta[:,tb],T,probObsState[:,-tb])
+    return beta
 
 def calc_gamma(alpha,beta):
     topPart=einsum('ij,ij->ij',alpha,beta)
     gamma=topPart/topPart.sum(axis=0)
     return gamma
 
-def calc_eta(obs,HMM,alpha,beta):
-    T=obs.shape[1]
-    probStateObs=array([[HMM.emission.probStateObs(cState,obs[:,t+1]) for cState in range(HMM.numStates)] for t in range(T-1)]).T
-    beta_times_probStateObs=multiply(beta[:,0:-1],probStateObs)
-    topPart=einsum('ik,ij,jk,jk->ijk',alpha[:,0:-1],HMM.T,beta[:,1:],probStateObs)
-    bottomPart=einsum('kt,kw,wt,wt->t',alpha[:,0:-1],HMM.T,beta[:,1:],probStateObs)
+def calc_eta(obs,T,alpha,beta,probStateObs):
+    topPart=einsum('it,ij,jt,jt->ijt',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
+    bottomPart=einsum('kt,kw,wt,wt->t',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
     eta=topPart/bottomPart
     return eta
 
@@ -111,7 +107,6 @@ class MarkovSeq():
 
 class Emission():
     properties=None
-    numOutputFeatures=None
     emType=None
     # def __init__(self):
 
@@ -137,23 +132,21 @@ class discreteEmission(Emission):
     
     def generateEmission(self,stateSeq):
         return numpy.array([numpy.random.choice(self.numOutputsPerFeature,p=self.emMat[cState]) for cState in stateSeq])
+
+    def probObs(self,Obs):
+        return array([self.emMat[:,cObs] for cObs in Obs]).T
     
     def probStateObs(self,cState,cObs):
-        return prod([self.emMat[cState,cFeat,cOb] for cFeat,cOb in zip(range(self.numOutputFeatures),cObs)])
+        return self.emMat[cState,cObs]
         
-    def fitTopEmission(self,obs,gamma):
-        T=obs.shape[1]
-        Indicator=zeros((self.numOutputFeatures,self.numOutputsPerFeature,T))
-        for cFeat in range(self.numOutputFeatures):
-            Indicator[[cFeat]*T,obs[cFeat,:],range(T)]=1
-        topPart=einsum('jkt,it->ijk',Indicator,gamma)
-        return topPart
+
         
         
             
 class myHMM():
     T=None
     numStates=None
+    numOutputFeatures=0
     emission=[]
     pi0=None
     def __init__(self, T=None,numStates=None,pi0=None):
@@ -180,6 +173,7 @@ class myHMM():
             self.emission.append(discreteEmission(self.numStates,**kargs))
         else:
             raise MyValidationError("Must provide valid emission type")
+        self.numOutputFeatures=self.numOutputFeatures+1
 
     def addPi0(self, pi0=None,useSteadyState=True):
         if pi0 is None:
@@ -188,10 +182,11 @@ class myHMM():
             #     else
             tmpMat=random.rand(self.numStates)
             pi0=tmpMat/sum(tmpMat)
-            pi0[-1]=1-sum(pi0[:-1])
+            # pi0[-1]=1-sum(pi0[:-1])
+            pi0=pi0/pi0.sum()
             self.pi0=pi0
         elif isinstance(pi0,(numpy.ndarray, numpy.generic)) and self.T.shape[0]==self.numStates:
-            pio[-1]=1-sum(pi0[:-1])
+            pi0=pi0/pi0.sum()
             self.pi0=pi0
         else:
             raise MyValidationError("Something wrong with pi0 input")
@@ -215,8 +210,18 @@ class myHMM():
         for cEmission in self.emission:
             outputSeq.append(cEmission.generateEmission(stateSeq))
         return outputSeq
+
+    def fitTopEmission(self,obs,gamma):
+        Tsteps=obs[0].shape[0]
+        Indicator=zeros((self.numOutputFeatures,self.numOutputsPerFeature,T))
+        for cFeat in range(self.numOutputFeatures):
+            Indicator[[cFeat]*T,obs[cFeat,:],range(T)]=1
+        topPart=einsum('jkt,it->ijk',Indicator,gamma)
+        return topPart
+
     
     def train(self,Ys):
+        
         
         gammas=[]
         etas=[]
@@ -224,26 +229,29 @@ class myHMM():
         T_topPart=zeros((self.numStates,self.numStates))
         T_bottomPart=zeros((self.numStates))
         b_bottomPart=zeros((self.numStates))
-        b_topPart=zeros((self.emission.emMat.shape))
+        # b_topPart=zeros((self.emission.emMat.shape))
         for obs in Ys:
-            alpha=calc_alpha(obs, self)
-            beta=calc_beta(obs, self)
+            probObsState=array([cEmission.probObs(cObs) for cEmission,cObs in zip(self.emission,obs)]).prod(axis=0)
+
+            alpha=calc_alpha(obs,self.T,self.pi0,probObsState)
+            beta=calc_beta(obs,self.T,probObsState)
             gamma=calc_gamma(alpha, beta)
-            eta=calc_eta(obs, self, alpha, beta)
-            # gammas.append(calc_gamma(alpha, beta))
-            # etas.append(calc_eta(obs, self, alpha, beta))
+            eta=calc_eta(obs, self.T, alpha, beta, probObsState)
+            
+        #     # gammas.append(calc_gamma(alpha, beta))
+        #     # etas.append(calc_eta(obs, self, alpha, beta))
             pi0_topPart=pi0_topPart+gamma[:,0]
             T_topPart=T_topPart+eta.sum(axis=2)
             T_bottomPart=T_bottomPart+gamma[:,0:-1].sum(axis=1)
             b_bottomPart=b_bottomPart+gamma.sum(axis=1)
             b_topPart=b_topPart+self.emission.fitTopEmission(obs,gamma)
 
-        R=len(Ys)
-        pi0=pi0_topPart/R
-        T=T_topPart/T_bottomPart
-        b=einsum('ijk,ij->ijk',b_topPart,1/b_bottomPart)
+        # R=len(Ys)
+        # pi0=pi0_topPart/R
+        # T=T_topPart/T_bottomPart
+        # b=einsum('ijk,ij->ijk',b_topPart,1/b_bottomPart)
         
-        a=5
+            a=5
             
         
 
@@ -278,7 +286,7 @@ mod.addEmission(emMat=None,emType='discrete',numOutputsPerFeature=NumOutputsPerF
 X,Y=mod.genSequences(NumSequences=5,maxLength=20)
 
 
-# mod.train(Y)
+mod.train(Y)
 
 # mod.addT()
 
