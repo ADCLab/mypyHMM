@@ -1,38 +1,47 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Jan 18 19:39:15 2021
-
-@author: aev
-"""
-
 import numpy
 from numpy import array, prod, empty, multiply, dot, ones, fliplr, matmul
-
-from numpy import array, random, diag, einsum, zeros
+from numpy import log
+from numpy import array, random, diag, einsum, zeros, log, inf
 from numpy.linalg import eigh, inv, norm
 
 
 
+def calc_logalpha(obs,T,pi0,probObsState):
+    Tsteps=obs[0].shape[0]
+    numStates=T.shape[0]
+    logalpha=empty((numStates,Tsteps))
+    # equivilent of elment-by-element multiplication
+    logalpha[:,0]=log(einsum('i,i->i',pi0,probObsState[:,0]))
+    for t in range(1,Tsteps):
+        for i in range(numStates):
+            log(probObsState[i,t])+log(logalpha[:,t-1])+log(T[:,i])
+        # alpha[:,t]=einsum('j,ji,i->i',alpha[:,t-1],T,probObsState[:,t])
+        # alpha[:,t]=alpha[:,t]/alpha[:,t].sum()
+    return logalpha
 
-def calc_alpha(obs,T,pi0,probObsState):
+
+
+def calc_alpha_scale1(obs,T,pi0,probObsState):
     Tsteps=obs[0].shape[0]
     numStates=T.shape[0]
     alpha=empty((numStates,Tsteps))
     # equivilent of elment-by-element multiplication
     alpha[:,0]=einsum('i,i->i',pi0,probObsState[:,0])
+    alpha[:,0]=alpha[:,0]/alpha[:,0].sum()
     for t in range(1,Tsteps):
         alpha[:,t]=einsum('j,ji,i->i',alpha[:,t-1],T,probObsState[:,t])
+        alpha[:,t]=alpha[:,t]/alpha[:,t].sum()
     return alpha
 
-def calc_beta(obs,T,probObsState):
+def calc_beta_scale1(obs,T,probObsState):
     Tsteps=obs[0].shape[0]
     numStates=T.shape[0]
     beta=empty((numStates,Tsteps))
-    beta[:,0]=numStates*[1]
+    beta[:,0]=numStates*[.5]
     probObsState=fliplr(probObsState)
     for tb in range(1,Tsteps):
         beta[:,tb]=einsum('j,ij,j->i',beta[:,tb-1],T,probObsState[:,tb-1])
+        beta[:,tb]=beta[:,tb]/beta[:,tb].sum()
     return fliplr(beta)
 
 def calc_gamma(alpha,beta):
@@ -42,8 +51,9 @@ def calc_gamma(alpha,beta):
 
 def calc_eta(obs,T,alpha,beta,probStateObs):
     topPart=einsum('it,ij,jt,jt->ijt',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
-    bottomPart=einsum('kt,kw,wt,wt->t',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
-    eta=einsum('ijt,t->ijt',topPart,1/bottomPart)
+    # bottomPart=einsum('kt,kw,wt,wt->t',alpha[:,0:-1],T,beta[:,1:],probStateObs[:,1:])
+    # eta=einsum('ijt,t->ijt',topPart,1/bottomPart)
+    eta=einsum('ijt,t->ijt', topPart,1/topPart.sum(axis=(0,1)))
     return eta
 
 def viterbi(obs,HMM):
@@ -105,16 +115,17 @@ class MarkovSeq():
     
 
 class Emission():
-    properties=None
-    emType=None
-    # def __init__(self):
+    def __init__(self):
+        self.properties=None
+        self.emType=None
 
 class discreteEmission(Emission):
-    emMat=None
-    numOutputsPerFeature=None
+
 
     
     def __init__(self,numStates,emMat=None,numOutputsPerFeature=None):
+        self.emMat=None
+        self.numOutputsPerFeature=None
                                   
         if emMat is None:
             if numOutputsPerFeature is None:
@@ -155,12 +166,12 @@ class discreteEmission(Emission):
         
             
 class myHMM():
-    T=None
-    numStates=None
-    numOutputFeatures=0
-    emission=[]
-    pi0=None
     def __init__(self, T=None,numStates=None,pi0=None):
+        self.T=None
+        self.numStates=None
+        self.numOutputFeatures=0
+        self.emission=[]
+        self.pi0=None
         if isinstance(numStates,int) and (T is None):
             tmpMat=random.rand(numStates,numStates)
             T=(tmpMat/tmpMat.sum(axis=0)).T
@@ -184,7 +195,8 @@ class myHMM():
             raise MyValidationError("Must first define transition matrix or number of states")
             
         if emType=='discrete':
-            self.emission.append(discreteEmission(self.numStates,**kargs))
+            newEmission=discreteEmission(self.numStates,**kargs)
+            self.emission.append(newEmission)
         else:
             raise MyValidationError("Must provide valid emission type")
         self.numOutputFeatures=self.numOutputFeatures+1
@@ -227,13 +239,17 @@ class myHMM():
 
 
     
+
+
     def train(self,Ys,iterations=20,Ttrue=None,pi0true=None):
+        lastLogProb=-inf
         for iter in range(iterations):
             pi0_topPart=zeros((self.numStates))
             T_topPart=zeros((self.numStates,self.numStates))
             T_bottomPart=zeros((self.numStates))
             b_bottomPart=zeros((self.numStates))
             b_topParts=[zeros((cEmission.emMat.shape)) for cEmission in self.emission]
+            logProb=0
             for obs in Ys:
                 probObsState=array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)]).prod(axis=0)
                 
@@ -242,8 +258,8 @@ class myHMM():
 
 
     
-                alpha=calc_alpha(obs,self.T,self.pi0,probObsState)
-                beta=calc_beta(obs,self.T,probObsState)
+                alpha=calc_alpha_scale1(obs,self.T,self.pi0,probObsState)
+                beta=calc_beta_scale1(obs,self.T,probObsState)
                 gamma=calc_gamma(alpha, beta)
                 eta=calc_eta(obs, self.T, alpha, beta, probObsState)
                 pi0_topPart=pi0_topPart+gamma[:,0]
@@ -252,9 +268,15 @@ class myHMM():
                 
                 
                 b_bottomPart=b_bottomPart+gamma.sum(axis=1)
+                
+                # logProb=logProb+log(alpha[:,-1].sum())
                 for cFeat in range(len(obs)):
                     self.emission[cFeat].calcTopPart(obs[cFeat],gamma)
 
+            if logProb<lastLogProb:
+                a=5
+            else:
+                lastLogProb=logProb
             R=len(Ys)
             pi0=pi0_topPart/R
             T=einsum('ij,i->ij',T_topPart,1/T_bottomPart)
@@ -264,15 +286,23 @@ class myHMM():
             self.pi0=pi0
             for cFeat in range(len(obs)):
                 self.emission[cFeat].updateEmission(b_bottomPart)
-            # for cEmission in self.emission:
-            #     cEmission.updateEmission(b_bottomPart)
-            # print(norm(self.pi0-pi00))
-            # if Ttrue is not None:
-            #     print(norm(self.T-Ttrue))
-            if pi0true is not None:
-                print(norm(self.pi0-pi0true))            
-
-            
+            # # for cEmission in self.emission:
+            # #     cEmission.updateEmission(b_bottomPart)
+            # # print(norm(self.pi0-pi00))
+            # # if Ttrue is not None:
+            # #     print(norm(self.T-Ttrue))
+            # # if pi0true is not None:
+            # #     print(norm(self.pi0-pi0true))            
+            # # print(logProb)
+            # print(self.T)
+            # Some logging is always good :)
+            print('= EPOCH #{} ='.format(iter))
+            print('Transition Matrix:', self.T)
+            print('Initial Dice Probability:', self.pi0)
+            print('First Dice:', self.emission[0].emMat[0,:])
+            print('Second Dice:', self.emission[0].emMat[1,:])
+            # print('Fitness:', fitness)
+            print()            
         
 
         
@@ -287,48 +317,3 @@ def createRandomEmission(numStates,numOutputFeatures,NumOutputsPerFeature):
     for cState in range(numStates):
         random.randint(0,100,(numOutputFeatures,NumOutputsPerFeature))
         
-
-
-numStates=2
-NumOutputsPerFeature=3
-
-
-# T = array([[0.5,0.2,0.3],[0.3,0.5,0.2],[0.2,0.3,0.5]])
-# B = array([[0.5,0.5],[0.4,0.6],[0.7,0.3]])
-# pi = array([0.2,0.4,0.4])
-# O = [[array([0,1,0,1])]]
-# mod=myHMM(T=T,numStates=3,pi0=pi)
-# mod.addEmission(emMat=B,emType='discrete')
-# mod.train(O)
-# print(mod.T)
-
-
-# #transition probabilities
-# T = array([[0.8,0.1],
-#                         [0.1,0.8]])
-# #Emission probabilities
-# B = array([[0.1,0.2,0.7],
-#                       [0.7,0.2,0.1]])
-# #test sequence
-# test_sequence = '331122313'
-# O = [[array([3,3,1,1,2,2,3,1,3])-1]]
-# pi = array([0.5,.5])
-
-# #probabilities of going to end state
-# end_probs = [0.1, 0.1]
-# #probabilities of going from start state
-# start_probs = [0.5, 0.5]
-# mod=myHMM(T=T,numStates=3,pi0=pi)
-# mod.addEmission(emMat=B,emType='discrete')
-# mod.train(O,iterations=10)
-
-mod=myHMM(numStates=3)
-T=mod.T
-pi0=mod.pi0
-mod.addEmission(emType='discrete',numOutputsPerFeature=5)
-# mod.addEmission(emType='discrete',numOutputsPerFeature=2)
-X,Y=mod.genSequences(NumSequences=1000,maxLength=20)
-
-HMM=myHMM(numStates=3,T=T)
-HMM.addEmission('discrete',numOutputsPerFeature=4)
-HMM.train(Ys=Y,iterations=500,Ttrue=T,pi0true=pi0)
