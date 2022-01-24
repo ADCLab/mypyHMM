@@ -29,13 +29,15 @@ HMM.addEmission('discrete',numOutputsPerFeature=6)
 
 
 sTime=time.time()
-fitness=HMM.train_pool(YsT,iterations=200,Ttrue=T,method='log',FracOrNum=500)
+fitness=HMM.train_pool(YsT,iterations=200,Ttrue=T,method='log',FracOrNum=1000)
 eTime=time.time()
 rtimes=eTime-sTime
 print('Pool Runtime: %f'%(eTime-sTime))
+plt.plot(fitness)
+
 
 sTime=time.time()
-fitness=HMM.train_pool(YsT,iterations=5,Ttrue=T,method='log',FracOrNum=1)
+fitness=HMM.train_pool(YsT,iterations=10,Ttrue=T,method=None,FracOrNum=1)
 eTime=time.time()
 rtimes=eTime-sTime
 print('Pool Runtime: %f'%(eTime-sTime))

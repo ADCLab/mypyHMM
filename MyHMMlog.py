@@ -334,7 +334,7 @@ class myHMM():
                     probObsState_pool= pool.starmap(self.calcLogProbObsState,zip(Ys,repeat(None)))
                     alpha_pool=pool.starmap(calc_alpha_scale1,zip(repeat(self.T),repeat(self.pi0),probObsState_pool,repeat(True)))
                     beta_pool=pool.starmap(calc_beta_scale1,zip(repeat(self.T),probObsState_pool,repeat(True)))
-                    gamma_pool=pool.starmap(calc_gamma,zip(alpha, beta))
+                    gamma_pool=pool.starmap(calc_gamma,zip(alpha_pool, beta_pool))
                     eta_pool=pool.starmap(calc_eta,zip(repeat(self.T), alpha_pool, beta_pool, probObsState_pool))   
 
                 for cFeat in range(len(Ys[0])):
