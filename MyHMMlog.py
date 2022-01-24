@@ -5,11 +5,16 @@ from numpy import array, random, diag, einsum, zeros, log, inf
 from numpy.linalg import eigh, inv, norm
 from scipy.special import logsumexp
 import os
+from multiprocessing import Pool
+from itertools import repeat
+from random import shuffle
 
 #Log-sum-exp trick
 def logsumexptrick(x):
     c = x.max()
     return c + log(sum(exp(x - c)))
+
+
 
 
 def calc_logalpha(log_T,log_pi0,log_probObsState):
@@ -184,6 +189,13 @@ class discreteEmission(Emission):
     
     def probStateObs(self,cState,cObs):
         return self.emMat[cState,cObs]
+
+    def calcSingleTopPart(self,obs,gamma):
+        Tsteps=obs.shape[0]
+        Indicator=zeros((self.numOutputsPerFeature, Tsteps))
+        Indicator[obs,range(Tsteps)]=1
+        topPart=einsum('kt,it->ik',Indicator,gamma)
+        return topPart
         
     def calcTopPart(self,obs,gamma):
         Tsteps=obs.shape[0]
@@ -196,7 +208,9 @@ class discreteEmission(Emission):
         self.emMat = (self.topPart.T/self.topPart.sum(axis=1)).T
         self.topPart=zeros(self.emMat.shape) 
 
-    
+    def updateEmissionDist(self,topPart):
+        topPartSum=array(topPart).sum(axis=0)
+        self.emMat=(topPartSum.T/topPartSum.sum(axis=1)).T
         
         
             
@@ -254,15 +268,19 @@ class myHMM():
         else:
             raise MyValidationError("Something wrong with pi0 input")
         self.log_pi0=log(self.pi0)
-        
-
-
             
-    def genSequences(self,NumSequences=100,maxLength=100,CheckAbsorbing=False):
-        stateSeqs=[self.genStateSequence(maxLength,CheckAbsorbing) for x in range(NumSequences)]
-        outputSeqs=[self.genOutputSequence(stateSeq) for stateSeq in stateSeqs]
+    def genSequences(self,NumSequences=100,maxLength=100,CheckAbsorbing=False,method='iter',numcore=1):
+        if method=='iter':
+            stateSeqs=[self.genStateSequence(maxLength,CheckAbsorbing) for x in range(NumSequences)]
+            outputSeqs=[self.genOutputSequence(stateSeq) for stateSeq in stateSeqs]
+        elif method=='map':
+            stateSeqs=list(map(self.genStateSequence,NumSequences*[maxLength],NumSequences*[CheckAbsorbing]))
+            outputSeqs=list(map(self.genOutputSequence,stateSeqs))
+        elif method=='pool':
+            with Pool(numcore) as pool:
+                stateSeqs = pool.starmap(self.genStateSequence, zip(NumSequences*[maxLength],NumSequences*[CheckAbsorbing]))
+                outputSeqs=pool.map(self.genOutputSequence,stateSeqs)      
         return stateSeqs, outputSeqs
-        # return([[stateSeq,outputSeq] for stateSeq,outputSeq in zip(stateSeqs,outputSeqs)])
     
     def genStateSequence(self,maxLength=100,CheckAbsorbing=False):
         stateSeq=[numpy.random.choice(self.numStates,p=self.pi0)]
@@ -279,7 +297,79 @@ class myHMM():
         return outputSeq
 
 
-    
+    def calcLogProbObsState(self,obs,method='log'):
+        if method=='log':
+            return log(array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)])).sum(axis=0)  
+        elif method==None:
+            return array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)]).prod(axis=0)
+
+    def train_pool(self,allYs,iterations=20,Ttrue=None,pi0true=None,method='log',numcore=6,FracOrNum=None):
+        lastLogProb=-inf
+        fitness=[]
+        for iter in range(iterations):
+            Number=len(allYs)
+            if FracOrNum<=1:
+                Number=round(FracOrNum*Number)
+            elif FracOrNum is not None:
+                Number=FracOrNum
+            
+            shuffle(allYs)
+            Ys=allYs[0:Number]
+            
+            
+            
+            b_topPart_pool=[]
+            b_topParts=[zeros((cEmission.emMat.shape)) for cEmission in self.emission]
+            logProb=0
+            with Pool(numcore) as pool:                
+                log_probObsState_pool = pool.map(self.calcLogProbObsState,Ys)
+                log_alpha_pool = pool.starmap(calc_logalpha,zip(repeat(self.log_T),repeat(self.log_pi0),log_probObsState_pool))
+                if method=='log':
+                    log_beta_pool=pool.starmap(calc_logbeta,zip(repeat(self.log_T),log_probObsState_pool))
+                    log_gamma_pool=pool.starmap(calc_gamma,zip(log_alpha_pool, log_beta_pool,repeat('log')))
+                    log_eta_pool=pool.starmap(calc_eta,zip(repeat(self.log_T), log_alpha_pool, log_beta_pool, log_probObsState_pool,repeat('log')))
+                    gamma_pool=log_gamma_pool
+                    eta_pool=log_eta_pool
+                else:
+                    probObsState_pool= pool.starmap(self.calcLogProbObsState,zip(Ys,repeat(None)))
+                    alpha_pool=pool.starmap(calc_alpha_scale1,zip(repeat(self.T),repeat(self.pi0),probObsState_pool,repeat(True)))
+                    beta_pool=pool.starmap(calc_beta_scale1,zip(repeat(self.T),probObsState_pool,repeat(True)))
+                    gamma_pool=pool.starmap(calc_gamma,zip(alpha, beta))
+                    eta_pool=pool.starmap(calc_eta,zip(repeat(self.T), alpha_pool, beta_pool, probObsState_pool))   
+
+                for cFeat in range(len(Ys[0])):
+                    b_topPart_pool.append(pool.starmap(self.emission[cFeat].calcSingleTopPart,zip([obs[cFeat] for obs in Ys],gamma_pool)))
+                    self.emission[cFeat].updateEmissionDist(b_topPart_pool[cFeat])
+
+                    
+            pi0_topPart=array([gamma[:,0] for gamma in gamma_pool]).sum(axis=0)
+            T_topPart=array([eta.sum(axis=2) for eta in eta_pool]).sum(axis=0)
+            
+
+
+                
+                
+                # b_bottomPart=b_bottomPart+gamma.sum(axis=1)
+            logProb=logProb+sum([log_alpha[:,-1].sum() for log_alpha in log_alpha_pool])
+            fitness.append(logProb)
+            ## Normally this should be pi0_topPart/len(Ys)
+            ## This ensures pi0 sumers to 0.  
+            pi0=pi0_topPart/pi0_topPart.sum()
+            T=(T_topPart.T/T_topPart.sum(axis=1)).T               
+            self.updateT(T)
+            self.updatePi0(pi0)
+            os.system('clear')
+            print('= EPOCH #{} ='.format(iter))
+            print('Transition Matrix:')
+            print(self.T)
+            print('Initial Dice Probability:', self.pi0)
+            print('First Dice:', self.emission[0].emMat[0,:])
+            print('Second Dice:', self.emission[0].emMat[1,:])
+            print('Fitness:', logProb)
+            print()  
+        return fitness
+        
+
 
 
     def train(self,Ys,iterations=20,Ttrue=None,pi0true=None,method='log'):
