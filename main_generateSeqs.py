@@ -17,27 +17,27 @@ HMM=myHMM(numStates=2,T=T,pi0=pi0)
 HMM.addEmission('discrete',numOutputsPerFeature=5,emMat=emMat)
 
 
-NumLoops=15
-NumSequences=1000
-sTime=time.time()
-for i in range(NumLoops):
-    Y=HMM.genSequences(NumSequences=NumSequences,method='iter')
-eTime=time.time()
-rtimes=eTime-sTime
-print('Itar Runtime: %f'%(eTime-sTime))
+# NumLoops=15
+# NumSequences=1000
+# sTime=time.time()
+# for i in range(NumLoops):
+#     Y=HMM.genSequences(NumSequences=NumSequences,method='iter')
+# eTime=time.time()
+# rtimes=eTime-sTime
+# print('Itar Runtime: %f'%(eTime-sTime))
 
 
-sTime=time.time()
-for i in range(NumLoops):
-    Y=HMM.genSequences(NumSequences=NumSequences,method='map')
-eTime=time.time()
-rtimes=eTime-sTime
-print('Map Runtime: %f'%(eTime-sTime))
+# sTime=time.time()
+# for i in range(NumLoops):
+#     Y=HMM.genSequences(NumSequences=NumSequences,method='map')
+# eTime=time.time()
+# rtimes=eTime-sTime
+# print('Map Runtime: %f'%(eTime-sTime))
 
 
-sTime=time.time()
-for i in range(NumLoops):
-    Y=HMM.genSequences(NumSequences=NumSequences,method='pool',numcore=6)
-eTime=time.time()
-rtimes=eTime-sTime
-print('Pool Runtime: %f'%(eTime-sTime))
+# sTime=time.time()
+# for i in range(NumLoops):
+#     Y=HMM.genSequences(NumSequences=NumSequences,method='pool',numcore=6)
+# eTime=time.time()
+# rtimes=eTime-sTime
+# print('Pool Runtime: %f'%(eTime-sTime))

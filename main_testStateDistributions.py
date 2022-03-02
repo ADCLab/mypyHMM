@@ -26,7 +26,9 @@ A=array([[0.70, 0.30],
 HMM1=myHMM(numStates=2,A=A,pi0=pi0)
 HMM1.addEmission(emType='discrete',emDists=['Empirical'],params=emMat)
 fitness=[]
-fit=HMM1.train_pool(YsT,iterations=200,method=None,FracOrNum=5000,printHMM=['A','pi0','emission'],numcore=8)
+# fit=HMM1.train_pool(YsT,iterations=200,method=None,FracOrNum=5000,printHMM=['A','pi0','emission'],numcore=8)
+fit=HMM1.train(YsT,iterations=200,method=None,FracOrNum=500,printHMM=['A','pi0','emission'])
+
 fitness=fitness+fit
 plt.plot(fitness)
 

@@ -7,16 +7,37 @@ from scipy.special import logsumexp
 import os
 from multiprocessing import Pool
 from itertools import repeat
-from random import shuffle
+from random import shuffle, uniform
+from scipy.stats import poisson
+import numbers
+import json
 
 #Log-sum-exp trick
 def logsumexptrick(x):
     c = x.max()
     return c + log(sum(exp(x - c)))
 
-
-
-
+def saveSequences(fout, StateSeqs=[], EmissionSeqs=[], mode='w'):
+    if StateSeqs==[]:
+        StateSeqs=len(EmissionSeqs)*[[]]
+    elif EmissionSeqs==[]:
+        EmissionSeqs=len(StateSeqs)*[[]]
+    with open(fout,mode) as f:
+        for cStateSeq,cEmissionSeq in zip(StateSeqs,EmissionSeqs):
+            cStateEmissionDict={'states':cStateSeq,'emissions':cEmissionSeq}
+            json.dump(cStateEmissionDict,f)
+            f.write('\n')
+      
+def loadSequences(fin):
+    stateSeq=[]
+    emissionSeq=[]
+    with open(fin) as f:
+        for cline in f:
+            cStateEmission=json.loads(cline)
+            stateSeq.append(cStateEmission['states'])
+            emissionSeq.append(cStateEmission['emissions'])
+    return stateSeq,emissionSeq
+            
 def calc_logalpha(log_A,log_pi0,log_probObsState):
     Tsteps=log_probObsState.shape[1]
     numStates=log_A.shape[0]
@@ -178,7 +199,13 @@ class discreteEmpiricalEmission():
         return numpy.random.choice(self.distDim,1,p=self.distMat)[0]
 
     def probObs(self,Obs):
-        return array([self.distMat[cObs] for cObs in Obs]).T
+        try:
+            a=array([self.distMat[int(cObs)] for cObs in Obs]).T
+        except:
+            5
+            print(5)
+        return array([self.distMat[int(cObs)] for cObs in Obs]).T
+
 
     def calcSingleTopPart(self,obs,state_gamma):
         Tsteps=obs.shape[0]
@@ -187,7 +214,7 @@ class discreteEmpiricalEmission():
         topPart=einsum('kt,t->k',Indicator,state_gamma)
         return topPart
 
-    def updateEmissionDist(self,topParts_unpool2state):
+    def updateEmissionDist(self,topParts_unpool2state,bottom_parts=[]):
         topPartSum=array(topParts_unpool2state).sum(axis=0)
         self.distMat=topPartSum.T/topPartSum.sum()
         
@@ -196,6 +223,37 @@ class discreteEmpiricalEmission():
         if stateNum is not None:
             stateStr='State %d: '%stateNum
         print(stateStr+array2string(self.distMat,precision=5))   
+
+class discretePoissonEmission():
+    emType='poisson'
+    def __init__(self,lamb=None):
+        if lamb is None:
+            self.lamb = uniform(1,10) 
+        elif (isinstance(lamb, numbers.Number))  & (lamb>0):
+            self.lamb = lamb
+        else:
+            raise MyValidationError("Lambda is not a valid float greater than 0")
+        self.distDim=1
+        
+    def generateEmission(self):
+        return numpy.random.poisson(lam=self.lamb)
+
+    def probObs(self,Obs):        
+        return array([poisson.pmf(int(cObs),mu=self.lamb) for cObs in Obs]).T
+
+    def calcSingleTopPart(self,obs,state_gamma):
+        topPart=einsum('t,t',obs,state_gamma)
+        return topPart
+    
+    def updateEmissionDist(self,top_parts,bottom_part):
+        self.lamb=sum(top_parts)/bottom_part
+
+    def printEmission(self,stateNum=None):
+        stateStr=''
+        if stateNum is not None:
+            stateStr='State %d: '%stateNum
+        print(stateStr+array2string(self.lamb,precision=5))
+
 
 # class Emission():
 #     def __init__(self):
@@ -213,32 +271,45 @@ class discreteEmission():
         if numStates!=len(emDims):
             emDims=numStates*emDims
         
-        for numState,emDist,parameter,enDim in zip(range(numStates),emDists,params,emDims):
-            self.state[numState]=self.addStateEmission(emDist,parameter,enDim)
+        for numState,emDist,parameter,emDim in zip(range(numStates),emDists,params,emDims):
+            self.state[numState]=self.addStateEmission(emDist,parameter,emDim)
         
     
     def addStateEmission(self,emDist,parameter,enDim):
         if emDist=='Empirical':
             return discreteEmpiricalEmission(parameter,enDim)
+        elif emDist=='Poisson':
+            return discretePoissonEmission(parameter)
     
-    def generateEmission(self,stateSeq):
-        return array( [self.state[cState].generateEmission() for cState in stateSeq] )
+    def generateEmission(self,stateSeq,asList=True):
+        if asList:
+            return [self.state[cState].generateEmission() for cState in stateSeq]
+        else:
+            return array([self.state[cState].generateEmission() for cState in stateSeq])
+            
 
     def probObs(self,Obs):
         return array([self.probStateObs(cState,Obs) for cState in range(self.numStates)])
             
     def probStateObs(self,cState,Obs):
+        try:
+            a=self.state[cState].probObs(Obs)
+        except:
+            5
         return self.state[cState].probObs(Obs)
 
     def calcSingleTopPart(self,obs,gamma):
         topParts=[self.state[cState].calcSingleTopPart(obs,gamma[cState,:]) for cState in range(self.numStates)]
         return topParts
 
-    def updateEmissionDist(self,topParts_unpool2state):
-        [self.state[cState].updateEmissionDist(topParts_unpool2state[cState]) for cState in range(self.numStates)]
+    def updateEmissionDist(self,topParts_unpool2state,bottomParts=[]):
+        [self.state[cState].updateEmissionDist(topParts_unpool2state[cState],bottomParts[cState]) for cState in range(self.numStates)]
         
-    def printEmission(self):
-        [self.state[cState].printEmission(cState) for cState in range(self.numStates)] 
+    def printEmission(self,cState=None):
+        if cState is None:
+            [self.state[cState].printEmission(cState) for cState in range(self.numStates)] 
+        else:
+            self.state[cState].printEmission(cState)
         
         
             
@@ -272,7 +343,6 @@ class myHMM():
     def addEmission(self, emType=None,**kargs):
         if self.numStates is None:
             raise MyValidationError("Must first define transition matrix or number of states")
-            
         if emType=='discrete':
             newEmission=discreteEmission(self.numStates,**kargs)
             self.emission.append(newEmission)
@@ -297,10 +367,10 @@ class myHMM():
             raise MyValidationError("Something wrong with pi0 input")
         self.log_pi0=log(self.pi0)
             
-    def genSequences(self,NumSequences=100,maxLength=100,CheckAbsorbing=False,method='iter',numcore=1):
+    def genSequences(self,NumSequences=100,maxLength=100,CheckAbsorbing=False,method='iter',asList=True,numcore=1):
         if method=='iter':
-            stateSeqs=[self.genStateSequence(maxLength,CheckAbsorbing) for x in range(NumSequences)]
-            outputSeqs=[self.genOutputSequence(stateSeq) for stateSeq in stateSeqs]
+            stateSeqs=[self.genStateSequence(maxLength,CheckAbsorbing,asList) for x in range(NumSequences)]
+            outputSeqs=[self.genOutputSequence(stateSeq,asList) for stateSeq in stateSeqs]
         elif method=='map':
             stateSeqs=list(map(self.genStateSequence,NumSequences*[maxLength],NumSequences*[CheckAbsorbing]))
             outputSeqs=list(map(self.genOutputSequence,stateSeqs))
@@ -310,7 +380,7 @@ class myHMM():
                 outputSeqs=pool.map(self.genOutputSequence,stateSeqs)      
         return stateSeqs, outputSeqs
     
-    def genStateSequence(self,maxLength=100,CheckAbsorbing=False):
+    def genStateSequence(self,maxLength=100,CheckAbsorbing=False,asList=True):
         stateSeq=[numpy.random.choice(self.numStates,p=self.pi0)]
         for cState in range(maxLength-1):
             if CheckAbsorbing and self.A[stateSeq[-1],stateSeq[-1]]==1:
@@ -318,7 +388,7 @@ class myHMM():
             stateSeq.append(numpy.random.choice(self.numStates,p=self.A[stateSeq[-1]]))
         return stateSeq
         
-    def genOutputSequence(self,stateSeq):
+    def genOutputSequence(self,stateSeq,asList=True):
         outputSeq=[]
         for cEmission in self.emission:
             outputSeq.append(cEmission.generateEmission(stateSeq))
@@ -364,12 +434,13 @@ class myHMM():
                     alpha_pool=pool.starmap(calc_alpha_scale1,zip(repeat(self.A),repeat(self.pi0),probObsState_pool,repeat(True)))
                     beta_pool=pool.starmap(calc_beta_scale1,zip(repeat(self.A),probObsState_pool,repeat(True)))
                     gamma_pool=pool.starmap(calc_gamma,zip(alpha_pool, beta_pool))
-                    zeta_pool=pool.starmap(calc_zeta,zip(repeat(self.A), alpha_pool, beta_pool, probObsState_pool))   
+                    zeta_pool=pool.starmap(calc_zeta,zip(repeat(self.A), alpha_pool, beta_pool, probObsState_pool))  
+                gamma_sum=array([gamma.sum(axis=1) for gamma in gamma_pool]).sum(axis=0)
 
                 for cFeat in range(len(Ys[0])):
                     b_topPart_pool=pool.starmap(self.emission[cFeat].calcSingleTopPart,zip([obs[cFeat] for obs in Ys],gamma_pool))
                     b_topPart_unpool2state=list(map(list, zip(*b_topPart_pool)))
-                    self.emission[cFeat].updateEmissionDist(b_topPart_unpool2state)
+                    self.emission[cFeat].updateEmissionDist(b_topPart_unpool2state,gamma_sum)
 
                     
             pi0_topPart=array([gamma[:,0] for gamma in gamma_pool]).sum(axis=0)
@@ -408,24 +479,35 @@ class myHMM():
 
         if 'emission' in printHMM:
             print('Emission Paramters:')
-            for cFeat in range(len(self.emission)):
-                self.emission[cFeat].printEmission()
+            for cState in range(self.numStates):
+                for cFeat in range(len(self.emission)):
+                    self.emission[cFeat].printEmission(cState)
             print()
 
-
-    def train(self,Ys,iterations=20,method='log'):
+    def train(self,allYs,iterations=20,method='log',FracOrNum=None,printHMM=[]):
         lastLogProb=-inf
         fitness=[]
         for iter in range(iterations):
+            Number=len(allYs)
+            if FracOrNum<=1:
+                Number=round(FracOrNum*Number)
+            elif FracOrNum is not None:
+                Number=FracOrNum
+            shuffle(allYs)
+            Ys=allYs[0:Number]
+            
             pi0_topPart=zeros((self.numStates))
             A_topPart=zeros((self.numStates,self.numStates))
             A_bottomPart=zeros((self.numStates))
             b_bottomPart=zeros((self.numStates))
-            b_topParts=[zeros((cEmission.emMat.shape)) for cEmission in self.emission]
+            # b_topParts=[] [zeros((cEmission.emMat.shape)) for cEmission in self.emission]
+            b_topParts=[]
             logProb=0
+            log_alpha_all=[]
             for obs in Ys:
                 log_probObsState=log(array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)])).sum(axis=0)    
                 log_alpha=calc_logalpha(self.log_A,self.log_pi0,log_probObsState)
+                log_alpha_all.append(log_alpha)
                 if method=='log':
                     log_beta=calc_logbeta(self.log_A,log_probObsState)
                     log_gamma=calc_gamma(log_alpha, log_beta,method='log')
@@ -446,38 +528,42 @@ class myHMM():
                 
                 b_bottomPart=b_bottomPart+gamma.sum(axis=1)
                 logProb=logProb+log_alpha[:,-1].sum()
+                
+                b_topPart=[]
                 for cFeat in range(len(obs)):
-                    self.emission[cFeat].calcTopPart(obs[cFeat],gamma)
+                    # b_topPartFeature=self.emission[cFeat].calcSingleTopPart(obs[cFeat],gamma)
+                    b_topPart.append(self.emission[cFeat].calcSingleTopPart(obs[cFeat],gamma))
+                    # b_topPart.append(list(map(list, zip(*b_topPartFeature))))
+                b_topParts.append(b_topPart)
+                    
 
             fitness.append(logProb)
-            R=len(Ys)
-            pi0=pi0_topPart/R
-            A=einsum('ij,i->ij',A_topPart,1/A_bottomPart)
+
+            # A=einsum('ij,i->ij',A_topPart,1/A_bottomPart)
             
             # emMat=einsum('ik,i->ik',b_topPart,1/b_bottomPart)
+            # self.updateA(A)
+            # self.updatePi0(pi0)
+            
+            b_topPart_unpool2state=[[[b_topParts[cSample][cFeat][cState] for cSample in range(len(b_topParts))]  for cState in range(self.numStates)] for cFeat in range(1)]
+            for cFeat in range(len(obs)):
+                self.emission[cFeat].updateEmissionDist(b_topPart_unpool2state[cFeat],b_bottomPart)
+
+            logProb=logProb+sum([log_alpha[:,-1].sum() for log_alpha in log_alpha_all])
+            fitness.append(logProb)
+            ## Normally this should be pi0_topPart/len(Ys)
+            ## This ensures pi0 sumers to 0.  
+            pi0=pi0_topPart/pi0_topPart.sum()
+            A=(A_topPart.T/A_topPart.sum(axis=1)).T               
             self.updateA(A)
             self.updatePi0(pi0)
-            for cFeat in range(len(obs)):
-                self.emission[cFeat].updateEmission(b_bottomPart)
-            # # for cEmission in self.emission:
-            # #     cEmission.updateEmission(b_bottomPart)
-            # # print(norm(self.pi0-pi00))
-            # # if Ttrue is not None:
-            # #     print(norm(self.A-Ttrue))
-            # # if pi0true is not None:
-            # #     print(norm(self.pi0-pi0true))            
-            # # print(logProb)
-            # print(self.A)
-            # Some logging is always good :)
+
+
+
             os.system('clear')
             print('= EPOCH #{} ='.format(iter))
-            print('Transition Matrix:')
-            print(self.A)
-            print('Initial Dice Probability:', self.pi0)
-            print('First Dice:', self.emission[0].emMat[0,:])
-            print('Second Dice:', self.emission[0].emMat[1,:])
+            self.printHMM(printHMM)
             print('Fitness:', logProb)
-            print()  
         return fitness
         
 
