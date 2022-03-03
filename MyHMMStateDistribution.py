@@ -117,24 +117,7 @@ def calc_zeta(A,alpha,beta,probStateObs,method=None):
         eta=einsum('ijt,t->ijt', topPart,1/topPart.sum(axis=(0,1)))
     return eta
 
-def viterbi(obs,HMM):
-    Tsteps=len(obs)
-    delta=empty((HMM.numStates,Tsteps))
-    psi=empty((HMM.numStates,Tsteps))
-    delta[:,0]=multiply(HMM.pi0,[HMM.emission.probStateObs(cState,obs[:,0]) for cState in range(HMM.numStates)])
-    psi[:,0]=HMM.numStates*[-1]
-    for t in range(Tsteps-1):
-        bestPathCostSoFar=array([multiply(delta[:,t], cCol) for cCol in HMM.A.T]).T.max(axis=0)
-        probStateObs=[HMM.emission.probStateObs(cState,obs[:,t+1]) for cState in range(HMM.numStates)]
-        delta[:,t+1]=multiply(bestPathCostSoFar,probStateObs)
-        psi[:,t+1]=array([multiply(delta[:,t], cCol) for cCol in HMM.A.T]).T.argmax(axis=0)
-    optPath=(Tsteps+1)*[None]
-    optPath[Tsteps]=delta[:,Tsteps-1].argmax()
-    for t in range(Tsteps-1,0,-1):
-        print(t)
-        print(optPath)
-        optPath[t]=int(psi[optPath[t+1],t])
-    return delta,psi,optPath
+
 
     
             
@@ -292,10 +275,6 @@ class discreteEmission():
         return array([self.probStateObs(cState,Obs) for cState in range(self.numStates)])
             
     def probStateObs(self,cState,Obs):
-        try:
-            a=self.state[cState].probObs(Obs)
-        except:
-            5
         return self.state[cState].probObs(Obs)
 
     def calcSingleTopPart(self,obs,gamma):
@@ -367,7 +346,7 @@ class myHMM():
             raise MyValidationError("Something wrong with pi0 input")
         self.log_pi0=log(self.pi0)
             
-    def genSequences(self,NumSequences=100,maxLength=100,CheckAbsorbing=False,method='iter',asList=True,numcore=1):
+    def genSequences(self,NumSequences=100,maxLength=100,CheckAbsorbing=False,method='iter',asList=True,numCores=1):
         if method=='iter':
             stateSeqs=[self.genStateSequence(maxLength,CheckAbsorbing,asList) for x in range(NumSequences)]
             outputSeqs=[self.genOutputSequence(stateSeq,asList) for stateSeq in stateSeqs]
@@ -375,7 +354,7 @@ class myHMM():
             stateSeqs=list(map(self.genStateSequence,NumSequences*[maxLength],NumSequences*[CheckAbsorbing]))
             outputSeqs=list(map(self.genOutputSequence,stateSeqs))
         elif method=='pool':
-            with Pool(numcore) as pool:
+            with Pool(numCores) as pool:
                 stateSeqs = pool.starmap(self.genStateSequence, zip(NumSequences*[maxLength],NumSequences*[CheckAbsorbing]))
                 outputSeqs=pool.map(self.genOutputSequence,stateSeqs)      
         return stateSeqs, outputSeqs
@@ -401,7 +380,7 @@ class myHMM():
         elif method==None:
             return array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)]).prod(axis=0)
 
-    def train_pool(self,allYs,iterations=20,method='log',numcore=6,FracOrNum=None,printHMM=[]):
+    def train_pool(self,allYs,iterations=20,method='log',numCores=6,FracOrNum=None,printHMM=[]):
         lastLogProb=-inf
         fitness=[]
         for iter in range(iterations):
@@ -416,7 +395,7 @@ class myHMM():
             b_topPart_pool=[]
             logProb=0
 
-            with Pool(numcore) as pool:                
+            with Pool(numCores) as pool:                
                 log_probObsState_all = pool.map(self.calcLogProbObsState,allYs)
                 log_alpha_all = pool.starmap(calc_logalpha,zip(repeat(self.log_A),repeat(self.log_pi0),log_probObsState_all))
                 log_probObsState_pool = log_probObsState_all[0:Number]
@@ -465,24 +444,7 @@ class myHMM():
             print('Fitness:', logProb)
 
         return fitness
-        
-    def printHMM(self,printHMM):
-        if 'A' in printHMM:
-            print('Transition Matrix:')
-            print(self.A)
-            print()
 
-        if 'pi0' in printHMM:
-            print('Initial Probability:')
-            print(self.pi0)
-            print()
-
-        if 'emission' in printHMM:
-            print('Emission Paramters:')
-            for cState in range(self.numStates):
-                for cFeat in range(len(self.emission)):
-                    self.emission[cFeat].printEmission(cState)
-            print()
 
     def train(self,allYs,iterations=20,method='log',FracOrNum=None,printHMM=[]):
         lastLogProb=-inf
@@ -566,8 +528,87 @@ class myHMM():
             print('Fitness:', logProb)
         return fitness
         
+    # probability == p. Tm: the transition matrix. Em: the emission matrix.
+    def viterbi_pool(self,allYs, method='exact',usePool=True,numCores=6):
+        with Pool(numCores) as pool: 
+            if method=='exact':
+                optPaths=pool.map(self.viterbi_exact,allYs)
+        return optPaths
+
+    def viterbi(self,allYs, method='exact'):
+        optPaths=[]
+        for Ys in allYs:
+            optPaths.append(self.viterbi_exact(Ys))
+        return  optPaths
+   
+    def viterbi_exact(self,obs):
+        Tsteps=len(obs[0])
+        mu=empty((self.numStates,Tsteps))
+        bestPriorState=empty((self.numStates,Tsteps)) 
+        optPath=[]
+
+        probObsState=array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)]).prod(axis=0)
+        mu[:,0]=einsum('i,i->i',self.pi0,probObsState[:,0])
+        mu[:,0]=mu[:,0]/mu[:,0].sum()
+        for t in range(Tsteps-1):
+            mu_notopt=einsum('k,pk,p->kp',probObsState[:,t+1],self.A,mu[:,t])
+            mu[:,t+1]=mu_notopt.max(axis=1)
+            mu[:,t+1]=mu[:,t+1]/mu[:,t+1].sum()
+            bestPriorState[:,t]=mu_notopt.argmax(axis=1)
+        
+        LastStateInPath=int(mu[:,t+1].argmax())
+        optPath.append(LastStateInPath)
+        for t in range(Tsteps-2,-1,-1):
+            try:
+                LastStateInPath=int(bestPriorState[LastStateInPath,t])
+                optPath.append(LastStateInPath)
+            except:
+                5
+        optPath.reverse()
+        return optPath        
 
         
+    def printHMM(self,printHMM):
+        if 'A' in printHMM:
+            print('Transition Matrix:')
+            print(self.A)
+            print()
+
+        if 'pi0' in printHMM:
+            print('Initial Probability:')
+            print(self.pi0)
+            print()
+
+        if 'emission' in printHMM:
+            print('Emission Paramters:')
+            for cState in range(self.numStates):
+                for cFeat in range(len(self.emission)):
+                    self.emission[cFeat].printEmission(cState)
+            print()    
+
+
+    # def viterbi(obs,HMM):
+    #     Tsteps=len(obs)
+    #     delta=empty((HMM.numStates,Tsteps))
+    #     psi=empty((HMM.numStates,Tsteps))
+    #     delta[:,0]=multiply(HMM.pi0,[HMM.emission.probStateObs(cState,obs[:,0]) for cState in range(HMM.numStates)])
+    #     psi[:,0]=HMM.numStates*[-1]
+    #     for t in range(Tsteps-1):
+    #         bestPathCostSoFar=array([multiply(delta[:,t], cCol) for cCol in HMM.A.T]).T.max(axis=0)
+    #         probStateObs=[HMM.emission.probStateObs(cState,obs[:,t+1]) for cState in range(HMM.numStates)]
+    #         delta[:,t+1]=multiply(bestPathCostSoFar,probStateObs)
+    #         psi[:,t+1]=array([multiply(delta[:,t], cCol) for cCol in HMM.A.T]).T.argmax(axis=0)
+    #     optPath=(Tsteps+1)*[None]
+    #     optPath[Tsteps]=delta[:,Tsteps-1].argmax()
+    #     for t in range(Tsteps-1,0,-1):
+    #         print(t)
+    #         print(optPath)
+    #         optPath[t]=int(psi[optPath[t+1],t])
+    #     return delta,psi,optPath
+   
+    
+            
+  
                    
                  
 
