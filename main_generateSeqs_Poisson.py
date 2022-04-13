@@ -7,7 +7,6 @@ import time
 set_printoptions(precision=5)
 
 
-lambs=array([1, 5, 10])
 pi0=array([0.15, 0.6, 0.4])
 A=array([[0.7, 0.2, .1],
         [0.15, 0.7, .15],
@@ -16,8 +15,12 @@ A=array([[0.7, 0.2, .1],
 
 
 HMM=myHMM(numStates=3,A=A,pi0=pi0)
-HMM.addEmission(emType='discrete',emDists=['Poisson'],params=lambs)
-HMM.addEmission(emType='discrete',emDists=['Poisson'],params=array([10, 5, 1]))
+
+lambs1=array([1, 5, 10])
+HMM.addEmission(emType='discrete',emDists=['Poisson'],params=lambs1)
+
+lambs2=array([1, 5, 10])
+HMM.addEmission(emType='discrete',emDists=['Poisson'],params=lambs2)
 
 Y=HMM.genSequences(NumSequences=5000,maxLength=20,method='iter',asList=True)
 

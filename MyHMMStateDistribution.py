@@ -1,6 +1,6 @@
 import numpy
 from numpy import array, prod, empty, multiply, dot, ones, fliplr, matmul
-from numpy import log, exp, sum, array2string
+from numpy import log, exp, sum, array2string, set_printoptions
 from numpy import array, random, diag, einsum, zeros, log, inf
 from numpy.linalg import eigh, inv, norm
 from scipy.special import logsumexp
@@ -11,6 +11,7 @@ from random import shuffle, uniform
 from scipy.stats import poisson
 import numbers
 import json
+from numpyencoder import NumpyEncoder
 
 #Log-sum-exp trick
 def logsumexptrick(x):
@@ -25,7 +26,7 @@ def saveSequences(fout, StateSeqs=[], EmissionSeqs=[], mode='w'):
     with open(fout,mode) as f:
         for cStateSeq,cEmissionSeq in zip(StateSeqs,EmissionSeqs):
             cStateEmissionDict={'states':cStateSeq,'emissions':cEmissionSeq}
-            json.dump(cStateEmissionDict,f)
+            json.dump(cStateEmissionDict,f,cls=NumpyEncoder)
             f.write('\n')
       
 def loadSequences(fin):
@@ -160,8 +161,8 @@ class MarkovSeq():
 
 
 
-class discreteEmpiricalEmission():
-    emType='empirical'
+class discreteCategoricalEmission():
+    emType='Categorical'
     def __init__(self,distMat=None,distDim=None):
         self.distMat=None
         self.distDim=None
@@ -173,7 +174,7 @@ class discreteEmpiricalEmission():
                 A=random.rand(distDim)
                 self.distMat=(A/A.sum())
         elif isinstance(distMat,(numpy.ndarray, numpy.generic)) and (distMat.ndim==1):
-            self.distMat=distMat
+            self.distMat=(distMat/distMat.sum())
         else:
             raise MyValidationError("Emission distribution not valid type or shape")
         self.distDim=self.distMat.shape[0]
@@ -191,7 +192,7 @@ class discreteEmpiricalEmission():
 
 
     def calcSingleTopPart(self,obs,state_gamma):
-        Tsteps=obs.shape[0]
+        Tsteps=len(obs)
         Indicator=zeros((self.distDim, Tsteps))
         Indicator[obs,range(Tsteps)]=1
         topPart=einsum('kt,t->k',Indicator,state_gamma)
@@ -208,7 +209,7 @@ class discreteEmpiricalEmission():
         print(stateStr+array2string(self.distMat,precision=5))   
 
 class discretePoissonEmission():
-    emType='poisson'
+    emType='Poisson'
     def __init__(self,lamb=None):
         if lamb is None:
             self.lamb = uniform(1,10) 
@@ -244,25 +245,26 @@ class discretePoissonEmission():
 #         self.emType=None
 
 class discreteEmission():
-    def __init__(self,numStates,emDists=['Empirical'],params=[None],emDims=[None]):                                  
+    # def __init__(self,numStates,emDists=['Categorical'],params=[None],emDims=[None]):                                  
+    def __init__(self,numStates,emDists=['Categorical'],params=[None],emDims=[None]):                                  
         self.numStates=numStates
         self.state={}
         if numStates!=len(emDists):
             emDists=numStates*emDists
         if numStates!=len(params):
             params=numStates*params
-        if numStates!=len(emDims):
-            emDims=numStates*emDims
+        # if numStates!=len(emDims):
+        #     emDims=numStates*emDims
         
-        for numState,emDist,parameter,emDim in zip(range(numStates),emDists,params,emDims):
-            self.state[numState]=self.addStateEmission(emDist,parameter,emDim)
+        for numState,emDist,parameters in zip(range(numStates),emDists,params):
+            self.state[numState]=self.addStateEmission(emDist,parameters)
         
     
-    def addStateEmission(self,emDist,parameter,enDim):
-        if emDist=='Empirical':
-            return discreteEmpiricalEmission(parameter,enDim)
+    def addStateEmission(self,emDist,parameters):
+        if emDist=='Categorical':
+            return discreteCategoricalEmission(**parameters)
         elif emDist=='Poisson':
-            return discretePoissonEmission(parameter)
+            return discretePoissonEmission(**parameters)
     
     def generateEmission(self,stateSeq,asList=True):
         if asList:
@@ -294,6 +296,7 @@ class discreteEmission():
             
 class myHMM():
     def __init__(self, A=None,numStates=None,pi0=None):
+        set_printoptions(precision=5)
         self.A=None
         self.log_A=None
         self.numStates=None
@@ -380,7 +383,7 @@ class myHMM():
         elif method==None:
             return array([self.emission[cFeat].probObs(obs[cFeat]) for cFeat in range(self.numOutputFeatures)]).prod(axis=0)
 
-    def train_pool(self,allYs,iterations=20,method='log',numCores=6,FracOrNum=None,printHMM=[]):
+    def train_pool(self,allYs,iterations=20,method='normalize',numCores=6,FracOrNum=None,printHMM=[]):
         lastLogProb=-inf
         fitness=[]
         for iter in range(iterations):
